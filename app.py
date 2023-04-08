@@ -1,10 +1,10 @@
-# import the required libraries
-import streamlit as st
-import requests
-import json
-import pandas as pd
 import datetime
+import json
+
+import pandas as pd
 import plotly.express as px
+import requests
+import streamlit as st
 
 # set the base URL for the API
 url = "https://deprem.afad.gov.tr/apiv2/event/filter?"
@@ -22,12 +22,13 @@ def get_earthquake_data(start_date, end_date):
     }
     # send the request to the API
     response = requests.get(url, params=params)
+    response.raise_for_status()
     
     # convert the response content into JSON format
-    data = json.loads(response.content)
+    data = response.json()
     
     # convert the response content to a pandas dataframe
-    df_r = pd.DataFrame(data)
+    df_r = pd.read_json(json.dumps(data))
     
     # filter data for Turkey
     df = df_r[df_r['country'] == ('Türkiye')].copy()
@@ -56,7 +57,8 @@ st.title("Türkiye Earthquakes Dashboard")
 date_range = st.sidebar.slider(
     "Select a date range",
     value=(start_date.date(), end_date.date()),
-    format="MM/DD/YYYY"
+    format="MM/DD/YYYY",
+    key="date_slider"
 )
 
 # get the earthquake data for the selected date range
@@ -68,36 +70,39 @@ df = get_earthquake_data(start_date_sel, end_date_sel)
 df.to_csv("earthquake_data.csv", index=False)
 
 # create a sidebar slider for magnitude
-# magnitude = st.sidebar.slider('Select a magnitude range', min_value=1, max_value=8, value=8, step=1)
-magnitude = st.sidebar.slider('Select a magnitude range', 0.0, 8.0, (0.0,8.0), step=0.1)
-df = df[(df['magnitude'].astype(float) >= magnitude[0]) & (df['magnitude'].astype(float) <= magnitude[1])]
+magnitude_range = st.sidebar.slider('Select a magnitude range', 0.0, 8.0, (0.0,8.0), step=0.1)
 
-# sidebar - Metric - Filter data for earthquakes after Feb-6
-start_date = datetime.datetime.strptime('2023-02-06', '%Y-%m-%d').date()
-start_time = datetime.datetime.strptime('01:17:32', '%H:%M:%S').time()
-data = df[(df['date_s'] >= start_date) & (df['GMT_time'] >= start_time)]
-total_quakes = len(data)-2 #removing the 2 earthquakes recoreded earlier on Feb-6
-st.sidebar.metric("Total Earthquakes Count", total_quakes)
+# filter the dataframe based on the selected magnitude range
+df_filtered = df[(df['magnitude'].astype(float) >= magnitude_range[0]) & (df['magnitude'].astype(float) <= magnitude_range[1])]
+
+# display the total count of earthquakes in the filtered dataframe
+st.sidebar.metric("Total Earthquakes Count", len(df_filtered))
+
 
 # compute time differences between earthquakes
-df = df.sort_values("date_s")
+df_filtered = df_filtered.sort_values("date_s")
+df_filtered["time_diff"] = df_filtered["date_s"].diff().apply(lambda x: x.total_seconds() / 60)
+df_filtered = df_filtered.dropna(subset=["time_diff"])
+time_diff_avg = df_filtered.groupby(df_filtered["date_s"])["time_diff"].mean() # group by date and compute average time difference
 df["time_diff"] = df["date_s"].diff().apply(lambda x: x.total_seconds() / 60)
-df = df.dropna(subset=["time_diff"])
-time_diff_avg = df.groupby(df["date_s"])["time_diff"].mean() # group by date and compute average time difference
 
-# compute time differences between earthquakes in the past 24 hours
+
 df_last_24_hours = df[df.index >= datetime.datetime.now() - datetime.timedelta(hours=24)]
-time_between_last_24_hours = df_last_24_hours.index.to_series().diff().dt.total_seconds().div(60)
-avg_time_between_last_24_hours = round(time_between_last_24_hours.mean())
-st.sidebar.metric("Average Time Between Earthquakes (last 24 hours)", f"{int(avg_time_between_last_24_hours//60):02d}:{int(avg_time_between_last_24_hours % 60):02d}:{int(avg_time_between_last_24_hours //60 % 60):02d}")
-
-# sidebar - Metric - Average time between earthquakes over time (detailed)
-avg_time_diff = df_last_24_hours.index.to_series().diff().mean()
-st.sidebar.write(avg_time_diff)
+time_between_last_24_hours = df_last_24_hours["time_diff"]
+if not time_between_last_24_hours.empty and time_between_last_24_hours.notna().all():
+    avg_time_between_last_24_hours = round(time_between_last_24_hours.mean())
+    minutes, seconds = divmod(avg_time_between_last_24_hours, 60)
+    hours, minutes = divmod(minutes, 60)
+    # sidebar - Metric - Average time between earthquakes over time (detailed)
+    avg_time_diff = df_last_24_hours.index.to_series().diff().mean()
+    st.sidebar.write("Average Time Between Earthquakes (last 24 hours)", avg_time_diff)
+# st.sidebar.metric("Average Time Between Earthquakes (last 24 hours)", f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}")
+else:
+    st.sidebar.warning("No data available for the selected filters.")
 
 # scatter mapbox plot of earthquake locations
-df["magnitude_num"] = pd.to_numeric(df["magnitude"]) # convert magnitude to numeric
-df_sorted = df.sort_values("magnitude_num", ascending=True) # sort dataframe by magnitude
+df_filtered["magnitude_num"] = pd.to_numeric(df_filtered["magnitude"]) # convert magnitude to numeric
+df_sorted = df_filtered.sort_values("magnitude_num", ascending=True) # sort dataframe by magnitude
 st.subheader("Earthquake Locations with Magnitude Map")
 fig = px.scatter_mapbox(df_sorted, lat="latitude", lon="longitude", color="magnitude_num", size="magnitude_num",
 hover_name="location", opacity = 0.7,
@@ -107,14 +112,14 @@ st.plotly_chart(fig)
 
 # line chart of earthquake magnitudes over time
 st.subheader("Magnitude Over Time (average)")
-df['magnitude'] = pd.to_numeric(df['magnitude'], errors='coerce')
-df.dropna(subset=['magnitude'], inplace=True)
-mag_over_time = df["magnitude"].resample("D").max()
+df_filtered['magnitude'] = pd.to_numeric(df_filtered['magnitude'], errors='coerce')
+df_filtered.dropna(subset=['magnitude'], inplace=True)
+mag_over_time = df_filtered["magnitude"].resample("D").max()
 st.area_chart(mag_over_time)
 
 # create a bar chart of earthquake magnitudes
 st.subheader("Magnitude Distribution (count)")
-mag_counts = df["magnitude"].value_counts()
+mag_counts = df_filtered["magnitude"].value_counts()
 st.bar_chart(mag_counts)
 
 # plot the average time difference over time chart
@@ -124,14 +129,14 @@ st.line_chart(time_diff_avg)
 # show the 10 strongest earthquakes
 st.header("10 Strongest Earthquakes")
 with st.expander('10 Strongest Earthquakes Table', expanded=False):
-    st.table(df.sort_values("magnitude", ascending=False).head(10))
+    st.table(df_filtered.sort_values("magnitude", ascending=False).head(10))
 
 # download button
-def convert_df(df):
+def convert_df(df_filtered):
     # IMPORTANT: Cache the conversion to prevent computation on every rerun
-    return df.to_csv().encode('utf-8')
+    return df_filtered.to_csv().encode('utf-8')
 
-csv = convert_df(df)
+csv = convert_df(df_filtered)
 st.sidebar.text(" ")
 st.sidebar.download_button(
     label="Download data as CSV",
@@ -140,4 +145,3 @@ st.sidebar.download_button(
     mime='text/csv',
 )
 st.sidebar.markdown("Data source: [AFAD](https://deprem.afad.gov.tr/home-page)")
-
