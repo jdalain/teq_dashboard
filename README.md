@@ -8,4 +8,4 @@ Starts by setting the base URL for the API and defining a function to get earthq
 
 A Streamlit web dashboard is created to include visual reporesntation of the data, in addition to sidebar sliders for selecting date and magnitude ranges. 
 
-Exporting the filtered data to a CSV file also added added. 
+Exporting the filtered data to a CSV file also added. 
